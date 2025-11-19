@@ -2,8 +2,8 @@ name: Auto Video Pipeline
 
 on:
   schedule:
-    - cron: '0 23 * * *'   # 06:00 WIB
-    - cron: '0 9 * * *'    # 16:00 WIB
+    - cron: '0 23 * * *'
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
 jobs:
@@ -18,5 +18,5 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Jalankan Test Script Python
-        run: python scripts/test.py
+      - name: Ambil berita terbaru
+        run: python scripts/fetch_news.py
