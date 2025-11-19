@@ -13,5 +13,5 @@ jobs:
       - name: Repo checkout
         uses: actions/checkout@v4
 
-      - name: Say Hello (Test)
-        run: echo "Workflow berhasil dibuat dan berjalan!"
+      - name: Jalankan Test Script Python
+        run: python scripts/test.py
