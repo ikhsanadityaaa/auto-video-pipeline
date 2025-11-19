@@ -1,183 +1,166 @@
 import feedparser
 import argparse
 import json
-import os
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote, urlparse, parse_qs
 import re
+import os
 
-# File riwayat berita
-HISTORY_FILE = "data/news_history.json"
-
-# Domain yang dianggap blog atau tidak kredibel
-BLOCKED_DOMAINS = [
-    "blogspot.", "wordpress.", "medium.com", "substack.com",
-    "tumblr.com", "blog.", "/tag/", "reddit.com", "quora.com"
+# ========== DOMAIN YANG AKAN DI-SKIP (BLOG / SPAM / OPINI) ==========
+SKIP_DOMAINS = [
+    "blogspot", "wordpress", "medium.com", "substack",
+    "quora.com", "theconversation", "yahoo.com/news/opinion",
+    "/opinion/", "/opinions/"
 ]
 
-# Bersihkan HTML
-def clean_html(text):
-    if not text:
-        return ""
-    text = re.sub("<.*?>", " ", text)
-    return text.replace("&nbsp;", " ").strip()
+# ========== RIWAYAT ARTIKEL YANG SUDAH DIPAKAI ==========
+HISTORY_FILE = "data/news_history.json"
 
-# Deteksi blog / domain tidak kredibel
-def is_blog(url):
-    url_low = url.lower()
-    return any(b in url_low for b in BLOCKED_DOMAINS)
-
-# Convert Google redirect menjadi link asli
-def convert_google_news_url(url):
-    if "news.google.com" not in url:
-        return url
-    if "url=" in url:
-        try:
-            real = url.split("url=")[1].split("&")[0]
-            return real
-        except:
-            return url
-    return url
-
-# Fetch RSS global
-def fetch_news(keyword):
-    q = quote_plus(keyword)
-    urls = [
-        f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en",
-        f"https://news.google.com/rss/search?q={q}&hl=id&gl=ID&ceid=ID:id",
-        f"https://news.google.com/rss/search?q={q}&hl=en&gl=GB&ceid=GB:en"
-    ]
-    feeds = []
-    for u in urls:
-        feeds.extend(feedparser.parse(u).entries)
-    return feeds
-
-# Load history
 def load_history():
     if not os.path.exists(HISTORY_FILE):
-        return []
+        return set()
+
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return set(data)
     except:
-        return []
+        return set()
 
-# Save history
-def save_history(data):
-    os.makedirs("data", exist_ok=True)
+def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+        json.dump(list(history), f, indent=4)
 
-# Filter berita berdasarkan waktu
-def filter_by_time(entries, days):
-    limit = datetime.utcnow() - timedelta(days=days)
-    result = []
-    for e in entries:
-        if "published_parsed" not in e:
-            continue
-        dt = datetime(*e.published_parsed[:6])
-        if dt >= limit:
-            result.append(e)
-    return result
+# ========== CLEAN HTML ==========
+def clean_html(html):
+    clean = re.sub('<.*?>', '', html)
+    clean = clean.replace("&nbsp;", " ").strip()
+    return clean
 
-# Bersihkan dan format artikel
-def process_entry(entry):
-    link = convert_google_news_url(entry.link)
-    if is_blog(link):
-        return None
+# ========== CEK DOMEN BLOG / SPAM ==========
+def is_bad_source(url):
+    return any(x.lower() in url.lower() for x in SKIP_DOMAINS)
 
-    summary = clean_html(entry.summary) if "summary" in entry else ""
+# ========== GOOGLE REDIRECT → URL ASLI ==========
+def extract_real_url(google_url):
+    try:
+        parsed = urlparse(google_url)
+        qs = parse_qs(parsed.query)
 
-    return {
-        "title": clean_html(entry.title),
-        "link": link,
-        "summary": summary,
-        "published": datetime(*entry.published_parsed[:6]).isoformat(),
-    }
+        # Jika Google menyertakan parameter url=
+        if "url" in qs:
+            return qs["url"][0]
 
-# Cari artikel berdasarkan tier waktu
-def search_articles(keywords):
+        # Pola redirect lain (Google kadang encode dalam "ved=" atau truncated)
+        if google_url.startswith("https://news.google.com/rss/articles/"):
+            # Google biasanya encode URL di bagian setelah artikelnya
+            decoded = unquote(google_url)
+            match = re.search(r"(https?://[^\s]+)", decoded)
+            if match:
+                url = match.group(1)
+                if "google.com" not in url:
+                    return url
+
+        return google_url
+    except:
+        return google_url
+
+# ========== FETCH GLOBAL NEWS ==========
+def fetch_global_news(keyword):
+    q = quote_plus(keyword)
+    url = f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en"
+    return feedparser.parse(url)
+
+# ========== SEARCH FUNCTION ==========
+def search_news(keywords, day_range):
     history = load_history()
-    found = []
+    now = datetime.utcnow()
+    limit = now - timedelta(days=day_range)
+    collected = []
 
-    for kw in keywords:
-        entries = fetch_news(kw)
+    for keyword in keywords:
+        feed = fetch_global_news(keyword)
 
-        # 1. berita 24 jam
-        recent = filter_by_time(entries, 1)
-        for e in recent:
-            art = process_entry(e)
-            if art and art["link"] not in history:
-                art["keyword"] = kw
-                found.append(art)
+        for entry in feed.entries:
+            # Filter waktu
+            if "published_parsed" not in entry:
+                continue
 
-        if found:
-            return found[:3]  # ambil max 3 artikel
+            pub = datetime(*entry.published_parsed[:6])
+            if pub < limit:
+                continue
 
-        # 2. berita 7 hari
-        recent = filter_by_time(entries, 7)
-        for e in recent:
-            art = process_entry(e)
-            if art and art["link"] not in history:
-                art["keyword"] = kw
-                found.append(art)
+            # Ambil link asli
+            link = extract_real_url(entry.link)
 
-        if found:
-            return found[:3]
+            # Skip domain sampah
+            if is_bad_source(link):
+                continue
 
-        # 3. berita 30 hari
-        recent = filter_by_time(entries, 30)
-        for e in recent:
-            art = process_entry(e)
-            if art and art["link"] not in history:
-                art["keyword"] = kw
-                found.append(art)
+            # Skip artikel yang pernah dipakai
+            if link in history:
+                continue
 
-        if found:
-            return found[:3]
+            # Clean summary
+            summary = clean_html(entry.summary) if "summary" in entry else ""
 
-        # 4. ambil artikel paling relevan
-        for e in entries:
-            art = process_entry(e)
-            if art and art["link"] not in history:
-                art["keyword"] = kw
-                found.append(art)
-                break
+            collected.append({
+                "keyword": keyword,
+                "title": clean_html(entry.title),
+                "link": link,
+                "summary": summary,
+                "published": pub.isoformat()
+            })
 
-        if found:
-            return found[:3]
+    return collected
 
-    return []
-
-# MAIN
+# ========== MAIN EXECUTION ==========
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keywords-file", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    # load keywords
+    # Load keywords
     with open(args.keywords_file, "r", encoding="utf-8") as f:
         keywords = [k.strip() for k in f.readlines() if k.strip()]
 
-    articles = search_articles(keywords)
+    result = None
+
+    # Cari 24 jam
+    articles = search_news(keywords, 1)
+    if articles:
+        print("=== OK | FOUND RECENT ARTICLES ===")
+        result = articles
+    else:
+        print("=== NO 24 HOUR NEWS → TRY 3 DAYS ===")
+        articles = search_news(keywords, 3)
+
+    if not articles:
+        print("=== NO 3 DAY NEWS → TRY 7 DAYS ===")
+        articles = search_news(keywords, 7)
+
+    if not articles:
+        print("=== NO 7 DAY NEWS → TRY 30 DAYS ===")
+        articles = search_news(keywords, 30)
 
     if not articles:
         print("=== NO NEWS FOUND AT ALL ===")
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump({"error": "no_news"}, f, indent=4)
-        exit(0)
+        exit()
 
-    # simpan hasil
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(articles, f, indent=4, ensure_ascii=False)
-
-    # update history
+    # Simpan history untuk cegah duplikasi
     history = load_history()
-    for a in articles:
-        history.append(a["link"])
+    for item in articles:
+        history.add(item["link"])
     save_history(history)
 
+    # Tampilkan hasil
     print(f"=== OK | FOUND {len(articles)} ARTICLES ===")
     for a in articles:
-        print(f"- {a['title']}")
+        print("-", a["title"], "|", a["link"])
+
+    # Simpan JSON output
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(articles, f, indent=4, ensure_ascii=False)
