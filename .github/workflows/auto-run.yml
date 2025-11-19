@@ -1,0 +1,17 @@
+name: Auto Video Pipeline
+
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 06:00 WIB (23:00 UTC)
+    - cron: '0 9 * * *'    # 16:00 WIB (09:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo checkout
+        uses: actions/checkout@v4
+
+      - name: Say Hello (Test)
+        run: echo "Workflow berhasil dibuat dan berjalan!"
