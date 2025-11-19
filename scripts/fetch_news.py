@@ -1,166 +1,167 @@
 import feedparser
 import argparse
 import json
-from datetime import datetime, timedelta
-from urllib.parse import quote_plus, unquote, urlparse, parse_qs
 import re
+from urllib.parse import unquote, urlparse, parse_qs
+from datetime import datetime, timedelta
 import os
 
-# ========== DOMAIN YANG AKAN DI-SKIP (BLOG / SPAM / OPINI) ==========
-SKIP_DOMAINS = [
+# ========== DOMAIN YANG TIDAK DIPERBOLEHKAN ==========
+BLOCKED_DOMAINS = [
     "blogspot", "wordpress", "medium.com", "substack",
-    "quora.com", "theconversation", "yahoo.com/news/opinion",
-    "/opinion/", "/opinions/"
+    "facebook.com", "instagram.com", "pinterest.com",
+    "tiktok.com", "x.com", "twitter.com"
 ]
 
-# ========== RIWAYAT ARTIKEL YANG SUDAH DIPAKAI ==========
+# ========== LOAD HISTORY ==========
 HISTORY_FILE = "data/news_history.json"
 
 def load_history():
     if not os.path.exists(HISTORY_FILE):
-        return set()
-
+        return []
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return set(data)
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
     except:
-        return set()
+        return []
 
 def save_history(history):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(history), f, indent=4)
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+
+# ========== DETECT BLOG ==========
+def is_blocked(url):
+    url = url.lower()
+    return any(bad in url for bad in BLOCKED_DOMAINS)
 
 # ========== CLEAN HTML ==========
 def clean_html(html):
-    clean = re.sub('<.*?>', '', html)
-    clean = clean.replace("&nbsp;", " ").strip()
-    return clean
+    html = re.sub('<.*?>', '', html)
+    return html.replace("&nbsp;", " ").strip()
 
-# ========== CEK DOMEN BLOG / SPAM ==========
-def is_bad_source(url):
-    return any(x.lower() in url.lower() for x in SKIP_DOMAINS)
-
-# ========== GOOGLE REDIRECT → URL ASLI ==========
+# ========== CONVERT GOOGLE NEWS LINK KE LINK ASLI ==========
 def extract_real_url(google_url):
-    try:
-        parsed = urlparse(google_url)
-        qs = parse_qs(parsed.query)
+    if "url=" in google_url:
+        try:
+            q = parse_qs(google_url.split("?")[1])
+            real = q.get("url")
+            if real:
+                return unquote(real[0])
+        except:
+            pass
+    # If Google stores link in entry.id and not in link
+    return google_url
 
-        # Jika Google menyertakan parameter url=
-        if "url" in qs:
-            return qs["url"][0]
-
-        # Pola redirect lain (Google kadang encode dalam "ved=" atau truncated)
-        if google_url.startswith("https://news.google.com/rss/articles/"):
-            # Google biasanya encode URL di bagian setelah artikelnya
-            decoded = unquote(google_url)
-            match = re.search(r"(https?://[^\s]+)", decoded)
-            if match:
-                url = match.group(1)
-                if "google.com" not in url:
-                    return url
-
-        return google_url
-    except:
-        return google_url
-
-# ========== FETCH GLOBAL NEWS ==========
-def fetch_global_news(keyword):
-    q = quote_plus(keyword)
-    url = f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en"
+# ========== FETCH FROM GOOGLE NEWS ==========
+def fetch(keyword):
+    url = f"https://news.google.com/rss/search?q={keyword}&hl=en&gl=US&ceid=US:en"
     return feedparser.parse(url)
 
-# ========== SEARCH FUNCTION ==========
-def search_news(keywords, day_range):
+# ========== CORE SEARCH FUNCTION ==========
+def search_news(keywords, days_limit, max_articles=5):
     history = load_history()
     now = datetime.utcnow()
-    limit = now - timedelta(days=day_range)
-    collected = []
+    cutoff = now - timedelta(days=days_limit)
+
+    results = []
 
     for keyword in keywords:
-        feed = fetch_global_news(keyword)
+        feed = fetch(keyword)
 
         for entry in feed.entries:
-            # Filter waktu
             if "published_parsed" not in entry:
                 continue
 
             pub = datetime(*entry.published_parsed[:6])
-            if pub < limit:
+            if pub < cutoff:
                 continue
 
-            # Ambil link asli
-            link = extract_real_url(entry.link)
+            clean_title = clean_html(entry.title)
 
-            # Skip domain sampah
-            if is_bad_source(link):
+            link_source = extract_real_url(entry.link)
+
+            if is_blocked(link_source):
                 continue
 
-            # Skip artikel yang pernah dipakai
-            if link in history:
+            if link_source in history:
                 continue
 
-            # Clean summary
             summary = clean_html(entry.summary) if "summary" in entry else ""
 
-            collected.append({
+            result_item = {
                 "keyword": keyword,
-                "title": clean_html(entry.title),
-                "link": link,
+                "title": clean_title,
+                "link": link_source,
                 "summary": summary,
                 "published": pub.isoformat()
+            }
+
+            results.append(result_item)
+
+            if len(results) >= max_articles:
+                return results
+
+    return results
+
+# ========== FALLBACK SEARCH ==========
+def fallback_search(keywords):
+    feed = fetch(keywords[0])
+    results = []
+    for entry in feed.entries[:5]:
+        link = extract_real_url(entry.link)
+        if not is_blocked(link):
+            results.append({
+                "keyword": keywords[0],
+                "title": clean_html(entry.title),
+                "link": link,
+                "summary": clean_html(entry.summary) if "summary" in entry else "",
+                "published": "unknown"
             })
+    return results
 
-    return collected
-
-# ========== MAIN EXECUTION ==========
+# ========== MAIN ==========
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keywords-file", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    # Load keywords
-    with open(args.keywords_file, "r", encoding="utf-8") as f:
-        keywords = [k.strip() for k in f.readlines() if k.strip()]
+    with open(args.keywords_file, "r") as f:
+        keywords = [x.strip() for x in f.readlines() if x.strip()]
 
-    result = None
+    # Try fresh news first
+    result = search_news(keywords, 1, max_articles=5)
 
-    # Cari 24 jam
-    articles = search_news(keywords, 1)
-    if articles:
-        print("=== OK | FOUND RECENT ARTICLES ===")
-        result = articles
-    else:
-        print("=== NO 24 HOUR NEWS → TRY 3 DAYS ===")
-        articles = search_news(keywords, 3)
+    if not result:
+        print("=== NO 24 HOUR NEWS → TRY 7 DAYS ===")
+        result = search_news(keywords, 7, max_articles=5)
 
-    if not articles:
-        print("=== NO 3 DAY NEWS → TRY 7 DAYS ===")
-        articles = search_news(keywords, 7)
-
-    if not articles:
+    if not result:
         print("=== NO 7 DAY NEWS → TRY 30 DAYS ===")
-        articles = search_news(keywords, 30)
+        result = search_news(keywords, 30, max_articles=5)
 
-    if not articles:
-        print("=== NO NEWS FOUND AT ALL ===")
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump({"error": "no_news"}, f, indent=4)
+    if not result:
+        print("=== NO 30 DAY NEWS → FALLBACK SIMPLE ===")
+        result = fallback_search(keywords)
+
+    if not result:
+        print("=== ABSOLUTELY NO NEWS FOUND ===")
+        with open(args.out, "w") as f:
+            json.dump({"error": "no_news"}, f)
         exit()
 
-    # Simpan history untuk cegah duplikasi
+    print(f"=== OK | FOUND {len(result)} ARTICLES ===")
+    for r in result:
+        print(f"- {r['title']}")
+        print(r["link"])
+
+    # Save output
+    with open(args.out, "w") as f:
+        json.dump(result, f, indent=2)
+
+    # Update history
     history = load_history()
-    for item in articles:
-        history.add(item["link"])
+    for r in result:
+        if r["link"] not in history:
+            history.append(r["link"])
     save_history(history)
-
-    # Tampilkan hasil
-    print(f"=== OK | FOUND {len(articles)} ARTICLES ===")
-    for a in articles:
-        print("-", a["title"], "|", a["link"])
-
-    # Simpan JSON output
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(articles, f, indent=4, ensure_ascii=False)
