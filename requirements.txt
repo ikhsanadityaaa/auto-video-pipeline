@@ -1,0 +1,5 @@
+feedparser
+requests
+gTTS
+Pillow
+moviepy
