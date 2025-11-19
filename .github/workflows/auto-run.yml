@@ -1,48 +1,24 @@
-name: Auto Video Pipeline
+name: Test Fetch News Only
 
 on:
-  schedule:
-    - cron: '0 23 * * *'   # 06:00 WIB (previous day 23:00 UTC)
-    - cron: '0 9 * * *'    # 16:00 WIB (09:00 UTC)
   workflow_dispatch:
 
 jobs:
-  build:
+  fetch_news:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Install system deps and ffmpeg
+      - name: Install dependencies
         run: |
-          sudo apt update -y
-          sudo apt install -y ffmpeg
+          pip install --upgrade pip
+          pip install feedparser
 
-      - name: Install Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          playwright install --with-deps
-
-      - name: Run pipeline
-        env:
-          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
-          PIXABAY_KEY: ${{ secrets.PIXABAY_KEY }}
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT: ${{ secrets.TG_CHAT }}
-          YT_CLIENT_SECRETS: ${{ secrets.YT_CLIENT_SECRETS }}
-          TIKTOK_STATE: ${{ secrets.TIKTOK_STATE }}
-        run: |
-          python scripts/fetch_news.py --keywords-file config/keywords.txt --out topic.json || true
-          python scripts/generate_script.py topic.json script.txt || true
-          python scripts/fetch_images.py script.txt assets/images || true
-          python scripts/tts_gtts.py script.txt voice.mp3 || true
-          python scripts/build_video.py assets/images voice.mp3 assets/sfx/shutter.wav assets/sfx/flash.wav assets/music/bg_loop.mp3 final.mp4 || true
-          python scripts/upload_youtube.py final.mp4 || true
-          python scripts/notify_telegram.py "Pipeline run complete. Check repo for artifacts." || true
-          python scripts/tiktok_playwright.py final.mp4 "CAPTION_PLACEHOLDER" || true
+      - name: Jalankan fetch_news.py
+        run: python scripts/fetch_news.py --keywords-file config/keywords.txt --out topic.json
