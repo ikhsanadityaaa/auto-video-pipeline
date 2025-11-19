@@ -1,175 +1,139 @@
 import feedparser
 import argparse
 import json
+import os
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
-import os
 import re
 
-# ====== DETEKSI BLOG (DIBLACKLIST) ======
-BLOG_PATTERNS = [
-    "blogspot.", "wordpress.", "medium.com", "substack.com",
-    "/blog/", ".blog/", "blog.", "tumblr.com"
+# Lokasi penyimpanan riwayat berita agar tidak terpakai ulang
+HISTORY_FILE = "data/news_history.json"
+
+# Kata yang menandakan BLOG, FORUM, atau bukan media berita
+BLOG_MARKERS = [
+    "blog",
+    "medium.com",
+    "wordpress",
+    "blogspot",
+    "substack",
+    "tumblr",
+    "forum"
 ]
 
 def is_blog(url):
-    return any(p in url.lower() for p in BLOG_PATTERNS)
+    url = url.lower()
+    return any(b in url for b in BLOG_MARKERS)
 
+def clean_html(text):
+    text = re.sub("<.*?>", "", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+    return text.strip()
 
-# ====== BERSIHKAN HTML ======
-def clean_html(html):
-    clean = re.sub('<.*?>', '', html)
-    clean = clean.replace("&nbsp;", " ").strip()
-    return clean
+def load_history():
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
 
+def save_history(history):
+    os.makedirs("data", exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
 
-# ====== FETCH GOOGLE NEWS GLOBAL ======
-def fetch_news(keyword):
+def fetch_news(keyword, days):
     q = quote_plus(keyword)
     url = f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en"
-    return feedparser.parse(url)
-
-
-# ====== MENGECEK HISTORY UNTUK MENGHINDARI DUPLIKAT ======
-def load_history():
-    if not os.path.exists("data/news_history.json"):
-        return []
-    with open("data/news_history.json", "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_to_history(article):
-    os.makedirs("data", exist_ok=True)
-    history = load_history()
-    history.append(article["link"])
-    with open("data/news_history.json", "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=4)
-
-
-# ====== CARI ARTIKEL SESUAI BATAS WAKTU ======
-def search_by_time(keywords, max_age_days):
+    feed = feedparser.parse(url)
 
     now = datetime.utcnow()
-    limit = now - timedelta(days=max_age_days)
+    limit = now - timedelta(days=days)
     history = load_history()
 
-    for keyword in keywords:
-        feed = fetch_news(keyword)
+    for entry in feed.entries:
+        if "published_parsed" not in entry:
+            continue
 
-        for entry in feed.entries:
+        pub = datetime(*entry.published_parsed[:6])
+        if pub < limit:
+            continue
 
-            if "published_parsed" not in entry:
-                continue
+        link = entry.link.lower()
 
-            pub = datetime(*entry.published_parsed[:6])
+        if is_blog(link):
+            continue
 
-            # Usia artikel
-            if pub < limit:
-                continue
+        title = clean_html(entry.title)
+        summary = clean_html(entry.summary) if "summary" in entry else ""
 
-            link = entry.link
+        # Jangan pakai berita yang sudah dipakai
+        if link in history:
+            continue
 
-            # Hindari blog
-            if is_blog(link):
-                continue
-
-            # Hindari artikel yang sudah pernah dipakai
-            if link in history:
-                continue
-
-            summary = clean_html(entry.summary) if "summary" in entry else ""
-
-            return {
-                "keyword": keyword,
-                "title": clean_html(entry.title),
-                "link": link,
-                "summary": summary,
-                "published": pub.isoformat()
-            }
+        return {
+            "keyword": keyword,
+            "title": title,
+            "summary": summary,
+            "link": link,
+            "published": pub.isoformat()
+        }
 
     return None
 
+def search_with_fallback(keywords):
+    print("Mencari berita dalam 24 jam terakhir")
+    for kw in keywords:
+        result = fetch_news(kw, 1)
+        if result:
+            return result
 
-# ====== FALLBACK TANPA BATAS USIA ======
-def search_oldest_relevant(keywords):
+    print("Tidak ada. Coba dalam 7 hari")
+    for kw in keywords:
+        result = fetch_news(kw, 7)
+        if result:
+            return result
 
-    history = load_history()
+    print("Tidak ada. Coba dalam 30 hari")
+    for kw in keywords:
+        result = fetch_news(kw, 30)
+        if result:
+            return result
 
-    for keyword in keywords:
-        feed = fetch_news(keyword)
-
-        for entry in feed.entries:
-
-            link = entry.link
-
-            if is_blog(link):
-                continue
-            if link in history:
-                continue
-
-            summary = clean_html(entry.summary) if "summary" in entry else ""
-
-            pub = None
-            if "published_parsed" in entry:
-                pub = datetime(*entry.published_parsed[:6]).isoformat()
-
-            return {
-                "keyword": keyword,
-                "title": clean_html(entry.title),
-                "link": link,
-                "summary": summary,
-                "published": pub or "unknown"
-            }
+    print("Tidak ada juga. Coba artikel lama")
+    for kw in keywords:
+        result = fetch_news(kw, 3650)  # 10 tahun
+        if result:
+            return result
 
     return None
 
-
-# ====== MAIN ======
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--keywords-file", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    # Load keyword list
     with open(args.keywords_file, "r", encoding="utf-8") as f:
-        keywords = [k.strip() for k in f.readlines() if k.strip()]
+        keywords = [x.strip() for x in f.readlines() if x.strip()]
 
-    # 24 jam
-    result = search_by_time(keywords, 1)
+    result = search_with_fallback(keywords)
+
     if result:
-        print("=== FOUND (24 HOURS) ===")
-        save_to_history(result)
-        json.dump(result, open(args.out, "w", encoding="utf-8"), indent=4)
-        exit()
+        print("=== BERITA DITEMUKAN ===")
+        print("Keyword :", result["keyword"])
+        print("Judul   :", result["title"])
+        print("Link    :", result["link"])
+        print("Ringkas :", result["summary"])
 
-    # 7 hari
-    print("=== NO 24 HOUR NEWS → TRY 7 DAYS ===")
-    result = search_by_time(keywords, 7)
-    if result:
-        print("=== FOUND (7 DAYS) ===")
-        save_to_history(result)
-        json.dump(result, open(args.out, "w", encoding="utf-8"), indent=4)
-        exit()
+        history = load_history()
+        history.append(result["link"])
+        save_history(history)
 
-    # 30 hari
-    print("=== NO 7 DAY NEWS → TRY 30 DAYS ===")
-    result = search_by_time(keywords, 30)
-    if result:
-        print("=== FOUND (30 DAYS) ===")
-        save_to_history(result)
-        json.dump(result, open(args.out, "w", encoding="utf-8"), indent=4)
-        exit()
-
-    # fallback
-    print("=== NO RECENT NEWS → TRY OLDEST RELEVANT ===")
-    result = search_oldest_relevant(keywords)
-    if result:
-        print("=== USING OLDEST RELEVANT MATCH ===")
-        save_to_history(result)
-        json.dump(result, open(args.out, "w", encoding="utf-8"), indent=4)
-        exit()
-
-    print("=== ABSOLUTELY NO ARTICLE FOUND (VERY RARE) ===")
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump({"error": "no_article_found"}, f, indent=4)
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+    else:
+        print("=== TIDAK ADA SATUPUN BERITA YANG COCOK ===")
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump({"error": "no_news_found"}, f, indent=2)
