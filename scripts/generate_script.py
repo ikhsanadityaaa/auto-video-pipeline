@@ -3,7 +3,6 @@ import json
 import os
 import random
 import google.generativeai as genai
-# Hapus semua impor tipe objek (types, HarmCategory, dll.)
 
 # --- Konfigurasi & Utilities ---
 HISTORY_FILE = "data/used_topics.json"
@@ -12,16 +11,23 @@ TOPIC_CRITERIA = "misteri, kisah sejarah terlupakan, penemuan sains unik, atau t
 JSON_START_MARKER = "===JSON_START==="
 JSON_END_MARKER = "===JSON_END==="
 
+# Coba Konfigurasi API Key
 try:
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-except KeyError:
-    print("❌ ERROR: Variabel lingkungan GEMINI_API_KEY tidak ditemukan.")
+    # Memastikan API Key diatur
+    API_KEY = os.environ["GEMINI_API_KEY"]
+    if not API_KEY:
+         raise ValueError("GEMINI_API_KEY kosong.")
+    genai.configure(api_key=API_KEY)
+except (KeyError, ValueError, AttributeError) as e:
+    print(f"❌ ERROR KRITIS: API Key tidak dapat dikonfigurasi. {e}")
     exit(1)
+
 
 # Fallback default
 FALLBACK_SCRIPT = "Ada kisah misteri yang tersembunyi. Mari kita cari tahu bersama! (Fallback Script)"
 
 def load_history():
+    # ... (fungsi tetap sama) ...
     if not os.path.exists(HISTORY_FILE):
         return []
     try:
@@ -31,6 +37,7 @@ def load_history():
         return []
 
 def save_history(new_topic_title):
+    # ... (fungsi tetap sama) ...
     os.makedirs("data", exist_ok=True)
     history = load_history()
     history.append(new_topic_title)
@@ -38,7 +45,8 @@ def save_history(new_topic_title):
         json.dump(history, f, indent=2, ensure_ascii=False)
 
 
-# Konfigurasi Keselamatan (Dictionary Standar)
+# Karena safety_settings sering menimbulkan error di versi lama, kita akan kirimkannya
+# ke API hanya jika API menerima, jika tidak, kita akan mengabaikannya di blok try/except.
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -63,22 +71,19 @@ def main():
         exit(1)
     
     history = load_history()
-    history_str = json.dumps(history)
+    history_str = json.dumps(history, ensure_ascii=False)
     random_query = random.choice(keywords)
 
-    # 2. Siapkan Prompt Final (Meminta JSON di dalam marker)
+    # 2. Siapkan Prompt Final
     gemini_prompt = f"""
-Anda adalah Redaktur Konten. Tugas Anda adalah mencari 1 topik unik yang belum pernah dibuat.
+Anda adalah Redaktur Konten. Tugas Anda adalah mencari 1 topik unik (tidak peduli aktual/masa lalu) yang belum pernah dibuat.
 
-Kriteria Topik: Topik harus relevan dengan: {TOPIC_CRITERIA}.
-Fokus pada kata kunci: {random_query}.
-
-Pembatasan: Jangan gunakan topik yang judulnya mirip atau sama dengan yang ada di history ini: {history_str}.
-
-Tugas:
-1. Cari 1 topik unik (gunakan Grounding/Web Search).
-2. Tulis skrip video 60 detik dalam Bahasa Indonesia.
-3. Setelah skrip selesai, output JSON yang berisi semua data, bungkus di antara penanda '{JSON_START_MARKER}' dan '{JSON_END_MARKER}'.
+Instruksi:
+1. **Gunakan pengetahuan internal dan pencarian berbasis teks** untuk menemukan topik yang relevan dengan: {TOPIC_CRITERIA}.
+2. Fokus pada kata kunci: {random_query}.
+3. Jangan gunakan topik yang judulnya mirip atau sama dengan yang ada di history ini: {history_str}.
+4. Tulis skrip video 60 detik dalam Bahasa Indonesia.
+5. Setelah skrip, output JSON yang berisi semua data, bungkus di antara penanda '{JSON_START_MARKER}' dan '{JSON_END_MARKER}'.
 
 FORMAT OUTPUT:
 [Skrip lengkap di sini]
@@ -89,21 +94,29 @@ FORMAT OUTPUT:
     "script": "Naskah video 60 detik...",
     "factual_keywords": ["keyword1", "keyword2", "keyword3", "keyword4"],
     "illustrative_keywords": ["keyword_illus1", "keyword_illus2", "keyword_illus3", "keyword_illus4"],
-    "source_link": "URL Sumber Utama"
+    "source_link": "URL Sumber Utama (Berikan link aktual yang Anda temukan)"
 }}
 {JSON_END_MARKER}
 """
     
     # 3. Panggil Gemini API
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # Coba Model Paling Universal jika 1.5-flash gagal di lingkungan lama
+        model = genai.GenerativeModel("gemini-pro")
 
-        # Panggil API hanya dengan parameter dasar yang dijamin bekerja.
-        response = model.generate_content(
-            contents=gemini_prompt,
-            tools=[{"google_search": {}}], # Parameter tools
-            safety_settings=SAFETY_SETTINGS
-        )
+        # Panggil API hanya dengan parameter SANGAT DASAR
+        try:
+            # Coba panggil dengan safety settings (jika API mengenali)
+            response = model.generate_content(
+                contents=gemini_prompt,
+                safety_settings=SAFETY_SETTINGS
+            )
+        except Exception:
+            # Jika safety_settings gagal (karena versi terlalu usang), coba tanpa safety settings
+            print("Peringatan: safety_settings diabaikan karena API tidak mengenali argumen tersebut.")
+            response = model.generate_content(
+                contents=gemini_prompt
+            )
         
         gemini_output_str = response.text.strip()
         
@@ -113,17 +126,13 @@ FORMAT OUTPUT:
 
         # 4. Parsing Teks untuk Mengekstrak JSON
         if JSON_START_MARKER not in gemini_output_str:
-            raise ValueError("Output Gemini tidak mengandung penanda JSON.")
+            raise ValueError(f"Output Gemini tidak mengandung penanda JSON. Output: {gemini_output_str[:200]}...")
         
-        # Ambil teks antara penanda
         json_text = gemini_output_str.split(JSON_START_MARKER, 1)[1]
         json_text = json_text.split(JSON_END_MARKER, 1)[0].strip()
 
-        # Membersihkan blok kode Markdown (jika ada)
-        if json_text.startswith("```json"):
-            json_text = json_text.strip("```json").strip()
-        if json_text.endswith("```"):
-            json_text = json_text.strip("```").strip()
+        # Membersihkan blok kode Markdown
+        json_text = json_text.strip("```json").strip().strip("```").strip()
 
         gemini_output = json.loads(json_text)
 
@@ -141,7 +150,6 @@ FORMAT OUTPUT:
             "source_link": gemini_output.get("source_link", "URL Not Provided"),
         }
         
-        # Simpan topik baru ke history
         save_history(final_output['title'])
 
         with open(args.output, "w", encoding="utf-8") as f:
@@ -151,7 +159,7 @@ FORMAT OUTPUT:
 
     except Exception as e:
         print(f"❌ Error Gemini API Call/Parsing: {e}")
-        # Fallback
+        # Fallback jika panggilan API gagal total
         fallback_output = {"script": "Fallback Error Script", "keywords": []}
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(fallback_output, f, indent=4, ensure_ascii=False)
