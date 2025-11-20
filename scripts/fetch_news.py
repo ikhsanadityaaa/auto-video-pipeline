@@ -6,16 +6,19 @@ import re
 from urllib.parse import quote_plus, unquote, parse_qs
 from datetime import datetime, timedelta
 
-# ========== SETTINGS ==========
+# === KONFIGURASI ===
 HISTORY_FILE = "data/news_history.json"
+
+# Domain/blog yang harus dihindari
 BLOCKED_DOMAINS = [
-    "blogspot", "wordpress", "medium.com", "substack",
-    "tumblr", "facebook.com", "instagram.com", "pinterest.com",
+    "blogspot", "wordpress", "medium.com", "substack.com",
+    "tumblr.com", "facebook.com", "instagram.com", "pinterest.com",
     "x.com", "twitter.com", "reddit.com", "quora.com",
-    "/blog/", "/opinion/"
+    "/blog/", "/opinion/", "forum", "pressrelease"
 ]
 
-# ========== UTILS ==========
+# === FUNGSI BANTU ===
+
 def load_history():
     if not os.path.exists(HISTORY_FILE):
         return set()
@@ -41,7 +44,7 @@ def is_blocked(url):
     return any(bad in low for bad in BLOCKED_DOMAINS)
 
 def extract_real_url(google_url):
-    # Coba ambil dari parameter url=
+    """Convert Google News redirect URL to original article URL."""
     if "url=" in google_url:
         try:
             qs = parse_qs(google_url.split("?", 1)[1])
@@ -49,48 +52,44 @@ def extract_real_url(google_url):
                 return unquote(qs["url"][0])
         except:
             pass
-    # Jika tidak ada, kembalikan apa adanya
     return google_url
 
-def fetch_google_news(keyword, days=1):
+def fetch_feed(keyword):
     q = quote_plus(keyword)
     url = f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en"
-    feed = feedparser.parse(url)
-    now = datetime.utcnow()
-    cutoff = now - timedelta(days=days)
-    valid_entries = []
-    for e in feed.entries:
-        if "published_parsed" not in e:
-            continue
-        pub = datetime(*e.published_parsed[:6])
-        if pub >= cutoff:
-            valid_entries.append(e)
-    return valid_entries
+    return feedparser.parse(url)
 
-# ========== MAIN LOGIC ==========
-def find_one_relevant_article(keywords):
+def search_news(keywords, min_days_ago, max_days_ago=0):
+    """Cari berita dalam rentang waktu tertentu."""
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=min_days_ago)
     history = load_history()
-    windows = [1, 7, 30, 365]  # hari
-    for days in windows:
-        print(f"=== MENCARI BERITA {days}-HARI TERAKHIR ===")
-        for kw in keywords:
-            entries = fetch_google_news(kw, days)
-            for e in entries:
-                real_link = extract_real_url(e.link)
-                if is_blocked(real_link):
-                    continue
-                if real_link in history:
-                    continue
-                return {
-                    "keyword": kw,
-                    "title": clean_html(e.title),
-                    "link": real_link,
-                    "summary": clean_html(e.summary) if hasattr(e, "summary") else "",
-                    "published": datetime(*e.published_parsed[:6]).isoformat()
-                }
+    for keyword in keywords:
+        feed = fetch_feed(keyword)
+        for entry in feed.entries:
+            if "published_parsed" not in entry:
+                continue
+            pub = datetime(*entry.published_parsed[:6])
+            if pub < cutoff:
+                continue
+            if max_days_ago > 0 and (now - pub).days < max_days_ago:
+                continue
+            real_link = extract_real_url(entry.link)
+            if is_blocked(real_link):
+                continue
+            if real_link in history:
+                continue
+            return {
+                "keyword": keyword,
+                "title": clean_html(entry.title),
+                "link": real_link,
+                "summary": clean_html(entry.summary) if "summary" in entry else "",
+                "published": pub.isoformat()
+            }
     return None
 
-# ========== MAIN ==========
+# === MAIN ===
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keywords-file", required=True)
@@ -100,7 +99,20 @@ if __name__ == "__main__":
     with open(args.keywords_file, "r", encoding="utf-8") as f:
         keywords = [k.strip() for k in f if k.strip()]
 
-    article = find_one_relevant_article(keywords)
+    # Prioritas: berita 24 jam terakhir
+    article = search_news(keywords, min_days_ago=1)
+
+    if not article:
+        print("=== Tidak ada berita 24 jam → coba 7 hari terakhir ===")
+        article = search_news(keywords, min_days_ago=7)
+
+    if not article:
+        print("=== Tidak ada berita 7 hari → coba 30 hari terakhir ===")
+        article = search_news(keywords, min_days_ago=30)
+
+    if not article:
+        print("=== Tidak ada berita 30 hari → ambil artikel paling relevan (tanpa batas waktu) ===")
+        article = search_news(keywords, min_days_ago=3650)  # ~10 tahun
 
     if article:
         print("✅ BERITA DITEMUKAN")
@@ -117,6 +129,6 @@ if __name__ == "__main__":
         history.add(article["link"])
         save_history(history)
     else:
-        print("❌ TIDAK ADA BERITA DITEMUKAN")
+        print("❌ TIDAK ADA BERITA YANG COCOK DITEMUKAN")
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump({"error": "no_news"}, f, indent=2)
