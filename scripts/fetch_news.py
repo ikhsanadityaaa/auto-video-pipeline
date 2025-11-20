@@ -1,134 +1,127 @@
-import feedparser
 import argparse
 import json
 import os
-import re
-from urllib.parse import quote_plus, unquote, parse_qs
+import random
 from datetime import datetime, timedelta
 
 # === KONFIGURASI ===
-HISTORY_FILE = "data/news_history.json"
+# History tetap dipakai untuk mencatat link AKTUAL yang sudah diproses oleh Gemini.
+HISTORY_FILE = "data/news_history.json" 
 
-# Domain/blog yang harus dihindari
-BLOCKED_DOMAINS = [
-    "blogspot", "wordpress", "medium.com", "substack.com",
-    "tumblr.com", "facebook.com", "instagram.com", "pinterest.com",
-    "x.com", "twitter.com", "reddit.com", "quora.com",
-    "/blog/", "/opinion/", "forum"
-]
+# Kriteria topik yang akan dimasukkan ke prompt Gemini
+TOPIC_CRITERIA = "misteri, kisah tragedi, percobaan science, sejarah, atau konspirasi."
 
-# === FUNGSI BANTU ===
+# === FUNGSI BANTU HISTORY (TIDAK BERUBAH) ===
 
 def load_history():
+    """Memuat daftar link yang sudah diproses dari history."""
     if not os.path.exists(HISTORY_FILE):
         return set()
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
+            # Menggunakan set untuk pencarian cepat
+            return set(json.load(f)) 
     except:
         return set()
 
 def save_history(history_set):
+    """Menyimpan daftar link yang sudah diproses ke history."""
     os.makedirs("data", exist_ok=True)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(list(history_set), f, indent=2)
 
-def clean_html(text):
-    if not text:
-        return ""
-    text = re.sub(r"<.*?>", " ", text)
-    return text.replace("&nbsp;", " ").strip()
+# === FUNGSI PENENTU QUERY GEMINI BARU ===
 
-def is_blocked(url):
-    low = url.lower()
-    return any(bad in low for bad in BLOCKED_DOMAINS)
+def create_gemini_query(mode: str, keywords: list, history: set):
+    """
+    Menyiapkan prompt dan query spesifik untuk Gemini berdasarkan mode.
+    
+    Returns:
+        dict: Objek yang berisi semua parameter untuk panggilan Gemini API.
+    """
+    
+    if mode == "aktual":
+        # 1. Tentukan Query untuk Berita Aktual (Mode 06:00 WIB)
+        keywords_str = ", ".join(keywords)
+        
+        # Kirim history ke skrip Gemini selanjutnya agar ia bisa memfilter
+        history_str = json.dumps(list(history)) 
+        
+        gemini_prompt = f"""
+        Anda adalah Redaktur Konten. Tugas Anda adalah mencari 1 topik berita **paling aktual (terbit dalam 24 jam terakhir)** yang relevan dengan kriteria: {TOPIC_CRITERIA}.
+        
+        Fokus pada kata kunci: {keywords_str}.
+        
+        Nanti, pastikan sumber berita yang dipilih **belum ada** dalam daftar history berikut: {history_str}.
+        
+        Susun narasinya menjadi skrip video 60 detik. Gunakan alat Grounding (Web Search) secara ekstensif.
+        """
+        
+        print(f"=== READY | QUERY MODE: AKTUAL | Keywords: {keywords_str} ===")
+        
+        return {
+            "topic_type": "AKTUAL",
+            "gemini_prompt": gemini_prompt,
+            "keywords": keywords,
+            "history": list(history)
+        }
 
-def extract_real_url(google_url):
-    """Convert Google News redirect URL to original article URL."""
-    if "url=" in google_url:
-        try:
-            qs = parse_qs(google_url.split("?", 1)[1])
-            if "url" in qs:
-                return unquote(qs["url"][0])
-        except:
-            pass
-    return google_url
-
-def fetch_feed(keyword):
-    q = quote_plus(keyword)  # Fix: encode spasi
-    url = f"https://news.google.com/rss/search?q={q}&hl=en&gl=US&ceid=US:en"
-    return feedparser.parse(url)
-
-def search_news(keywords, min_days_ago, max_days_ago=0):
-    """Cari berita dalam rentang waktu tertentu."""
-    now = datetime.utcnow()
-    cutoff = now - timedelta(days=min_days_ago)
-    history = load_history()
-    for keyword in keywords:
-        feed = fetch_feed(keyword)
-        for entry in feed.entries:
-            if "published_parsed" not in entry:
-                continue
-            pub = datetime(*entry.published_parsed[:6])
-            if pub < cutoff:
-                continue
-            if max_days_ago > 0 and (now - pub).days < max_days_ago:
-                continue
-            real_link = extract_real_url(entry.link)
-            if is_blocked(real_link):
-                continue
-            if real_link in history:
-                continue
-            return {
-                "keyword": keyword,
-                "title": clean_html(entry.title),
-                "link": real_link,
-                "summary": clean_html(entry.summary) if "summary" in entry else "",
-                "published": pub.isoformat()
-            }
+    elif mode == "masa_lalu":
+        # 2. Tentukan Query untuk Kisah Masa Lalu (Mode 16:00 WIB)
+        
+        # Gunakan kata kunci random untuk variasi topik masa lalu
+        past_keywords = ["kisah sejarah terlupakan", "misteri unik tak terpecahkan", "tragedi ilmuwan masa lalu", "temuan arkeologi paling aneh"]
+        random_query = random.choice(past_keywords)
+        
+        gemini_prompt = f"""
+        Anda adalah Redaktur Konten. Tugas Anda adalah mencari 1 topik **kisah masa lalu** yang jarang dibahas, memiliki dokumentasi visual (foto/arsip) dan relevan dengan: {TOPIC_CRITERIA}.
+        
+        Gunakan Grounding (Web Search) untuk menemukan kisah terkait {random_query}.
+        
+        Susun narasinya menjadi skrip video 60 detik.
+        """
+        
+        print(f"=== READY | QUERY MODE: MASA LALU | Random Query: {random_query} ===")
+        
+        return {
+            "topic_type": "MASA_LALU",
+            "gemini_prompt": gemini_prompt,
+            "keywords": [random_query]
+        }
+    
     return None
 
 # === MAIN ===
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # Tambahkan argumen --mode yang diperlukan di YML
+    parser.add_argument("--mode", required=True, choices=["aktual", "masa_lalu"]) 
     parser.add_argument("--keywords-file", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    with open(args.keywords_file, "r", encoding="utf-8") as f:
-        keywords = [k.strip() for k in f if k.strip()]
+    try:
+        with open(args.keywords_file, "r", encoding="utf-8") as f:
+            keywords = [k.strip() for k in f if k.strip()]
+    except FileNotFoundError:
+        print("❌ Error: keywords-file tidak ditemukan.")
+        exit(1)
 
-    # Prioritas: berita 24 jam terakhir
-    article = search_news(keywords, min_days_ago=1)
+    # Muat history (diperlukan untuk mode 'aktual')
+    history = load_history()
+    
+    # Buat Query untuk Gemini
+    topic_query = create_gemini_query(args.mode, keywords, history)
 
-    if not article:
-        print("=== Tidak ada berita 24 jam → coba 7 hari terakhir ===")
-        article = search_news(keywords, min_days_ago=7)
-
-    if not article:
-        print("=== Tidak ada berita 7 hari → coba 30 hari terakhir ===")
-        article = search_news(keywords, min_days_ago=30)
-
-    if not article:
-        print("=== Tidak ada berita 30 hari → ambil artikel paling relevan (tanpa batas waktu) ===")
-        article = search_news(keywords, min_days_ago=3650)  # ~10 tahun
-
-    if article:
-        print("✅ BERITA DITEMUKAN")
-        print(f"Judul   : {article['title']}")
-        print(f"Link    : {article['link']}")
-        print(f"Keyword : {article['keyword']}")
-
-        # Simpan ke output
+    if not topic_query:
+        print("❌ Error: Mode tidak valid.")
         with open(args.out, "w", encoding="utf-8") as f:
-            json.dump(article, f, indent=2, ensure_ascii=False)
+            json.dump({"error": "invalid_mode"}, f, indent=2)
+        exit(1)
 
-        # Update history
-        history = load_history()
-        history.add(article["link"])
-        save_history(history)
-    else:
-        print("❌ TIDAK ADA BERITA YANG COCOK DITEMUKAN")
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump({"error": "no_news"}, f, indent=2)
+    # Simpan Query ke output JSON (Input untuk generate_script.py)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(topic_query, f, indent=2, ensure_ascii=False)
+    
+    print(f"✅ Query untuk Gemini tersimpan di {args.out}")
