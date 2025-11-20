@@ -1,52 +1,10 @@
-import json
 import argparse
+import json
 import os
-import re
+import google.generativeai as genai
 
-def clean_text(text):
-    # Hapus HTML & normalisasi spasi
-    text = re.sub(r"<.*?>", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-def build_script(article):
-    title = clean_text(article.get("title", ""))
-    summary = clean_text(article.get("summary", ""))
-
-    # === HOOK 3 DETIK ===
-    # Ambil frasa menarik dari judul
-    if "mystery" in title.lower() or "misteri" in title.lower():
-        hook = "Ada misteri besar yang belum terpecahkan..."
-    elif "experiment" in title.lower() or "eksperimen" in title.lower():
-        hook = "Ilmuwan baru saja melakukan eksperimen yang mengejutkan..."
-    elif "discovery" in title.lower() or "penemuan" in title.lower():
-        hook = "Penemuan luar biasa baru saja diumumkan..."
-    elif "wealth" in title.lower() or "kaya" in title.lower():
-        hook = "Seseorang tiba-tiba menjadi kaya dalam semalam..."
-    else:
-        hook = f"Pernahkah kamu dengar tentang: {title.split(' - ')[0]}?"
-
-    # === BODY 50 DETIK ===
-    # Batasi panjang agar muat ~60 detik
-    words = summary.split()
-    if len(words) > 180:
-        body = " ".join(words[:180]) + "..."
-    else:
-        body = summary
-
-    # === PENUTUP 7 DETIK ===
-    closing = "Simak fakta lengkapnya di video ini."
-
-    script = f"{hook}\n{body}\n{closing}"
-    return script
-
-def extract_image_keywords(article):
-    title = clean_text(article.get("title", ""))
-    # Ambil kata kunci utama: hapus kata umum, keep entitas
-    keywords = title.replace(":", "").replace("-", "").replace("discovery", "").replace("mystery", "")
-    keywords = re.sub(r"[^a-zA-Z0-9\s]", "", keywords)
-    keywords = "_".join(keywords.split()[:4])  # max 4 kata
-    return keywords.lower()
+# Konfigurasi API Key
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -56,31 +14,89 @@ def main():
     args = parser.parse_args()
 
     with open(args.input, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        articles = json.load(f)
 
-    # Ambil artikel pertama (pastikan format list)
-    if isinstance(data, list):
-        article = data[0]
-    elif isinstance(data, dict) and "error" in data:
-        # Fallback jika tidak ada berita
-        article = {
-            "title": "Misteri Dunia yang Belum Terpecahkan",
-            "summary": "Banyak misteri di dunia ini belum terpecahkan hingga hari ini. Dari Segitiga Bermuda hingga Voynich Manuscript, para ilmuwan terus mencari jawaban."
-        }
-    else:
-        article = data
+    if isinstance(articles, dict) and articles.get("error"):
+        print("Fallback: tidak ada berita")
+        fallback = "Ada satu misteri besar yang belum terpecahkan hingga hari ini..."
+        with open(args.output, "w", encoding="utf-8") as out:
+            out.write(fallback)
+        with open(args.images_out, "w", encoding="utf-8") as img:
+            img.write("mystery,unsolved,history")
+        return
 
-    # Buat narasi
-    script = build_script(article)
-    with open(args.output, "w", encoding="utf-8") as f:
-        f.write(script)
+    # Ambil artikel pertama
+    first = articles[0] if isinstance(articles, list) else articles
+    title = first["title"]
+    summary = first["summary"]
+    link = first["link"]
 
-    # Buat keyword gambar
-    image_kw = extract_image_keywords(article)
-    with open(args.images_out, "w", encoding="utf-8") as f:
-        f.write(image_kw)
+    # === PROMPT GEMINI ===
+    prompt = f"""
+Berdasarkan artikel berikut:
 
-    print("✅ Narasi & keyword gambar berhasil dibuat")
+Judul: {title}
+Ringkasan: {summary}
+Link: {link}
+
+Lakukan hal berikut:
+1. Ekstrak topik inti dalam 5-7 kata (misal: "penemuan tiang logam di bawah Piramida Giza").
+2. Cari 3 artikel lain dari sumber kredibel (BBC, Reuters, AP, NatGeo, Smithsonian, dll) yang membahas topik YANG SAMA, bukan hanya kategori umum.
+3. Buat narasi video 60 detik dalam BAHASA INDONESIA dengan:
+   - Hook 3 detik di awal (kalimat mengejutkan atau pertanyaan menarik)
+   - Penjelasan fakta selama 50 detik
+   - Penutup 7 detik
+4. Jangan tambahkan fakta di luar sumber.
+5. Hasilkan 4 keyword pencarian gambar faktual (dalam bahasa Inggris, spasi diganti underscore, fokus pada foto asli, bukan ilustrasi).
+6. Format output EXACT seperti ini:
+
+===TOPIC===
+[TOPIK_INTI]
+===ARTICLES===
+- [Judul 1] | [Link 1]
+- [Judul 2] | [Link 2]
+- ...
+===SCRIPT===
+[Narasi 60 detik]
+===IMAGES===
+[keyword1, keyword2, keyword3, keyword4]
+"""
+
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(
+            prompt,
+            safety_settings={
+                "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
+                "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
+                "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE"
+            }
+        )
+        full_text = response.text.strip()
+
+        if "===SCRIPT===" in full_text:
+            script = full_text.split("===SCRIPT===")[1].split("===IMAGES===")[0].strip()
+            image_line = full_text.split("===IMAGES===")[1].strip()
+            keywords = image_line.replace("[", "").replace("]", "").replace('"', "")
+        else:
+            script = "Pernahkah kamu dengar tentang: " + title + "?"
+            keywords = "mystery,science,history,discovery"
+
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(script)
+        with open(args.images_out, "w", encoding="utf-8") as f:
+            f.write(keywords)
+        with open("gemini_full_output.txt", "w", encoding="utf-8") as f:
+            f.write(full_text)
+
+    except Exception as e:
+        print(f"Error Gemini: {e}")
+        fallback = f"Pernahkah kamu dengar tentang: {title}?"
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(fallback)
+        with open(args.images_out, "w", encoding="utf-8") as f:
+            f.write("mystery,history,science")
 
 if __name__ == "__main__":
     main()
