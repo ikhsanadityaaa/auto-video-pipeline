@@ -17,12 +17,12 @@ def main():
         articles = json.load(f)
 
     if isinstance(articles, dict) and articles.get("error"):
-        print("Fallback: tidak ada berita")
-        fallback = "Ada satu misteri besar yang belum terpecahkan hingga hari ini..."
+        print("Fallback: tidak ada berita ditemukan")
+        fallback = "Pernahkah kamu dengar tentang: misteri dunia?"
         with open(args.output, "w", encoding="utf-8") as out:
             out.write(fallback)
-        with open(args.images_out, "w", encoding="utf-8") as img:
-            img.write("mystery,unsolved,history")
+        with open(args.images-out, "w", encoding="utf-8") as img_out:
+            img_out.write("mystery,ancient,history,discovery")
         return
 
     # Ambil artikel pertama
@@ -51,7 +51,7 @@ Lakukan hal berikut:
 6. Format output EXACT seperti ini:
 
 ===TOPIC===
-[TOPIK_INTI]
+[TOPIC_INTI]
 ===ARTICLES===
 - [Judul 1] | [Link 1]
 - [Judul 2] | [Link 2]
@@ -63,7 +63,7 @@ Lakukan hal berikut:
 """
 
     try:
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel("gemini-1.0-pro")  # ✅ Model yang kompatibel dengan v1beta
         response = model.generate_content(
             prompt,
             safety_settings={
@@ -85,17 +85,17 @@ Lakukan hal berikut:
 
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(script)
-        with open(args.images_out, "w", encoding="utf-8") as f:
+        with open(args.images-out, "w", encoding="utf-8") as f:
             f.write(keywords)
-        with open("gemini_full_output.txt", "w", encoding="utf-8") as f:
-            f.write(full_text)
+        with open("gemini_full_output.txt", "w", encoding="utf-8") as dbg:
+            dbg.write(full_text)
 
     except Exception as e:
         print(f"Error Gemini: {e}")
         fallback = f"Pernahkah kamu dengar tentang: {title}?"
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(fallback)
-        with open(args.images_out, "w", encoding="utf-8") as f:
+        with open(args.images-out, "w", encoding="utf-8") as f:
             f.write("mystery,history,science")
 
 if __name__ == "__main__":
