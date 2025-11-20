@@ -2,8 +2,8 @@ name: Auto Video Pipeline
 
 on:
   schedule:
-    - cron: '0 23 * * *'   # 06:00 WIB (23:00 UTC previous day)
-    - cron: '0 9 * * *'    # 16:00 WIB (09:00 UTC)
+    - cron: '0 23 * * *'   # 06:00 WIB
+    - cron: '0 9 * * *'    # 16:00 WIB
   workflow_dispatch:
 
 jobs:
@@ -21,21 +21,24 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install feedparser
+          pip install feedparser google-generativeai
 
-      - name: Fetch News (Global, Multi-Source)
+      - name: Fetch News
         run: python scripts/fetch_news.py --keywords-file config/keywords.txt --out topic.json
 
-      - name: Generate Script + Image Keywords
+      - name: Generate Script with Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scripts/generate_script.py --input topic.json --output script.txt --images-out image_keywords.txt
 
-      - name: Upload hasil sebagai artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: video-pipeline-output-${{ github.run_number }}
+          name: pipeline-output-${{ github.run_number }}
           path: |
             topic.json
             script.txt
             image_keywords.txt
+            gemini_full_output.txt
             data/news_history.json
           retention-days: 7
