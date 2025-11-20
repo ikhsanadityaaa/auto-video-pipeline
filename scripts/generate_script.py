@@ -6,70 +6,67 @@ from google.generativeai import types
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # Konfigurasi API Key
+# Pastikan GEMINI_API_KEY sudah diset di GitHub Secrets
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+# Fallback default jika terjadi kegagalan total
+FALLBACK_SCRIPT = "Ada kisah misteri yang tersembunyi. Mari kita cari tahu bersama!"
+FALLBACK_KEYWORDS = ["mystery_archive", "dark_past", "secret_files", "ancient_discovery"]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="JSON file berisi topik yang akan diproses.")
-    parser.add_argument("--output", required=True, help="JSON file output (Script & Keywords).")
+    parser.add_argument("--input", required=True, help="JSON file berisi topik query dari fetch_news.py.")
+    parser.add_argument("--output", required=True, help="JSON file output akhir (Script & Keywords).")
     args = parser.parse_args()
 
-    # Fallback default jika terjadi kegagalan total
-    FALLBACK_SCRIPT = "Ada kisah misteri yang tersembunyi. Mari kita cari tahu bersama!"
-    FALLBACK_KEYWORDS = ["mystery_archive", "dark_past", "secret_files", "ancient_discovery"]
-
-    # === Load topik/artikel dari skrip sebelumnya ===
+    # === Load TOPIC QUERY dari skrip fetch_news.py ===
     try:
         with open(args.input, "r", encoding="utf-8") as f:
-            topic_data = json.load(f)
+            topic_query = json.load(f)
     except Exception as e:
-        print(f"Error loading input file: {e}")
-        # Jika file input gagal dimuat, langsung fallback
+        print(f"Error loading input query file: {e}")
         final_output = {"script": FALLBACK_SCRIPT, "keywords": FALLBACK_KEYWORDS}
         with open(args.output, "w", encoding="utf-8") as out:
-            json.dump(final_output, out, indent=4)
+            json.dump(final_output, out, indent=4, ensure_ascii=False)
+        return
+        
+    # Ambil prompt dan metadata yang sudah disiapkan oleh fetch_news.py
+    gemini_prompt = topic_query.get("gemini_prompt", "")
+    topic_type = topic_query.get("topic_type", "UNKNOWN")
+    
+    if not gemini_prompt:
+        print("Error: gemini_prompt tidak ditemukan di file input.")
+        final_output = {"script": FALLBACK_SCRIPT, "keywords": FALLBACK_KEYWORDS}
+        with open(args.output, "w", encoding="utf-8") as out:
+            json.dump(final_output, out, indent=4, ensure_ascii=False)
         return
 
-    # Ambil data link/title yang dikirim dari skrip sebelumnya
-    title = topic_data.get("title", "Unknown Topic")
-    link = topic_data.get("link", "NONE")
-    topic_type = topic_data.get("type", "UNKNOWN")
-
     # =========================================================
-    # 1. DEFINISI STRUKTUR OUTPUT (JSON SCHEMA)
+    # 1. DEFINISI STRUKTUR OUTPUT (JSON SCHEMA sebagai Dictionary)
+    #    Ini mengatasi error "AttributeError: module 'google.generativeai.types' has no attribute 'Schema'"
     # =========================================================
-    # Ini menjamin output Gemini selalu terstruktur, anti-parsing error!
-    response_schema = types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "topic": types.Schema(type=types.Type.STRING, description="Topik utama dalam 5-7 kata."),
-            "script": types.Schema(type=types.Type.STRING, description="Naskah video 60 detik dalam Bahasa Indonesia (termasuk Hook, Body, Closing)."),
-            "factual_keywords": types.Schema(type=types.Type.ARRAY, items=types.Schema(type=types.Type.STRING), description="4 kata kunci faktual (nama, lokasi, objek) untuk pencarian gambar."),
-            "illustrative_keywords": types.Schema(type=types.Type.ARRAY, items=types.Schema(type=types.Type.STRING), description="4 kata kunci ilustratif (atmosfir, emosi, vibe) untuk pencarian gambar stock.")
+    response_schema = {
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "Topik utama dalam 5-7 kata."},
+            "script": {"type": "string", "description": "Naskah video 60 detik dalam Bahasa Indonesia (termasuk Hook, Body, Closing)."},
+            "factual_keywords": {
+                "type": "array", 
+                "items": {"type": "string"}, 
+                "description": "4 kata kunci faktual (nama, lokasi, objek) untuk pencarian gambar. Contoh: 'Titanic wreckage', 'Jack the Ripper'."
+            },
+            "illustrative_keywords": {
+                "type": "array", 
+                "items": {"type": "string"}, 
+                "description": "4 kata kunci ilustratif (atmosfir, emosi, vibe) untuk pencarian gambar stock. Contoh: 'dark stormy sea', 'forensic science', 'old archive'."
+            }
         },
-        required=["topic", "script", "factual_keywords", "illustrative_keywords"]
-    )
+        "required": ["topic", "script", "factual_keywords", "illustrative_keywords"]
+    }
     
     # =========================================================
-    # 2. PROMPT GEMINI (Menggunakan Grounding)
+    # 2. PEMANGGILAN API DENGAN GROUNDING
     # =========================================================
-    prompt = f"""
-Anda adalah peneliti dan penulis naskah dokumenter. Anda harus bekerja berdasarkan topik yang diberikan.
-
-MODE TOPIK: {topic_type}
-
-INFORMASI SUMBER:
-- JUDUL: {title}
-- LINK: {link}
-
-TUGAS:
-1. VERIFIKASI: Gunakan alat pencarian web (Grounding) untuk memverifikasi topik dan mencari detail tambahan.
-2. SCRIPT: Tulis naskah video 60 detik dalam Bahasa Indonesia: Hook 3 detik dramatis, Body 50 detik faktual (gunakan data web dari Grounding), Closing 7 detik.
-3. KEYWORDS: Sediakan 4 kata kunci FAKTUAL (spesifik) dan 4 kata kunci ILUSTRATIF (atmosfir) untuk pencarian gambar.
-
-JANGAN MENGINVENSI FAKTA. PASTIKAN SEMUA OUTPUT DALAM FORMAT JSON yang diminta.
-"""
-
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
@@ -85,16 +82,16 @@ JANGAN MENGINVENSI FAKTA. PASTIKAN SEMUA OUTPUT DALAM FORMAT JSON yang diminta.
         tool_config = types.GenerateContentConfig(
             tools=[{"google_search": {}}],
             response_mime_type="application/json",
-            response_schema=response_schema
+            # Menggunakan skema dictionary yang sudah diperbaiki
+            response_schema=response_schema 
         )
 
         response = model.generate_content(
-            prompt,
+            gemini_prompt, # Menggunakan prompt yang sudah disiapkan dari fetch_news.py
             config=tool_config,
             safety_settings=safety_settings
         )
         
-        # Output Gemini adalah string JSON
         gemini_output_str = response.text.strip()
         
         # Debug: Simpan output mentah Gemini
@@ -105,17 +102,20 @@ JANGAN MENGINVENSI FAKTA. PASTIKAN SEMUA OUTPUT DALAM FORMAT JSON yang diminta.
         gemini_output = json.loads(gemini_output_str)
 
         # === Simpan output akhir (Script & Keywords digabung) ===
-        # Gabungkan semua keywords menjadi satu list untuk proses berikutnya
+        # Gabungkan semua keywords menjadi satu list 
         all_keywords = (
-            gemini_output["factual_keywords"] + 
-            gemini_output["illustrative_keywords"]
+            gemini_output.get("factual_keywords", []) + 
+            gemini_output.get("illustrative_keywords", [])
         )
         
         final_output = {
-            "title": gemini_output["topic"],
-            "script": gemini_output["script"],
+            "title": gemini_output.get("topic", "Topik Tanpa Judul"),
+            "script": gemini_output.get("script", FALLBACK_SCRIPT),
             "keywords": all_keywords,
-            "source_link": link # Simpan link sumber asli untuk kredit
+            "topic_type": topic_type,
+            # Kita tidak tahu link sumber pastinya, karena Gemini yang mencarinya. 
+            # Jika perlu, Anda bisa meminta Gemini menyertakan 'source_link' di skema output.
+            "source_info": f"Topic generated by Gemini (Mode: {topic_type})" 
         }
         
         with open(args.output, "w", encoding="utf-8") as f:
@@ -124,7 +124,7 @@ JANGAN MENGINVENSI FAKTA. PASTIKAN SEMUA OUTPUT DALAM FORMAT JSON yang diminta.
         print(f"✅ Success! Script for '{final_output['title']}' saved to {args.output}")
 
     except Exception as e:
-        print(f"Error Gemini API Call: {e}")
+        print(f"❌ Error Gemini API Call: {e}")
         # Fallback jika panggilan API gagal total
         fallback_output = {"script": FALLBACK_SCRIPT, "keywords": FALLBACK_KEYWORDS}
         with open(args.output, "w", encoding="utf-8") as f:
