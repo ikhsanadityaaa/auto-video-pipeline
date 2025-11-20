@@ -2,43 +2,92 @@ name: Auto Video Pipeline
 
 on:
   schedule:
-    - cron: '0 23 * * *'   # 06:00 WIB
-    - cron: '0 9 * * *'    # 16:00 WIB
+    # 06:00 WIB (Cron: 0 23 * * *)
+    - cron: '0 23 * * *'
+    # 16:00 WIB (Cron: 0 9 * * *)
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+env:
+  # Definisikan API Key di level workflow agar mudah digunakan di semua job
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+jobs:
+  
+  # ===============================================
+  # JOB 1: VIDEO AKTUAL (Dijalankan pada 06:00 WIB)
+  # ===============================================
+  video_aktual:
+    # Batasi job ini hanya berjalan pada jadwal 06:00 WIB
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * *'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repo & Setup Python
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install feedparser google-generativeai
+        run: pip install feedparser google-generativeai
 
-      - name: Fetch News
-        run: python scripts/fetch_news.py --keywords-file config/keywords.txt --out topic.json
-
+      # 1. TENTUKAN TOPIK AKTUAL
+      - name: Fetch Topic (AKTUAL Mode)
+        # --mode aktual akan dijalankan. Outputnya adalah topic_aktual.json
+        run: python scripts/fetch_news.py --mode aktual --keywords-file config/keywords.txt --out topic_aktual.json
+        
+      # 2. GENERATE SCRIPT dengan Gemini
       - name: Generate Script with Gemini
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python scripts/generate_script.py --input topic.json --output script.txt --images-out image_keywords.txt
+        # Hapus --images-out dan ubah output menjadi JSON
+        run: python scripts/generate_script.py --input topic_aktual.json --output script_aktual.json
 
-      - name: Upload artifacts
+      - name: Upload Actual Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-output-${{ github.run_number }}
+          name: pipeline-output-aktual-${{ github.run_number }}
           path: |
-            topic.json
-            script.txt
-            image_keywords.txt
-            gemini_full_output.txt
+            topic_aktual.json
+            script_aktual.json # File ini berisi script dan keywords
+            data/news_history.json
+          retention-days: 7
+
+  # -----------------------------------------------
+  
+  # ===============================================
+  # JOB 2: VIDEO MASA LALU (Dijalankan pada 16:00 WIB)
+  # ===============================================
+  video_masa_lalu:
+    # Batasi job ini hanya berjalan pada jadwal 16:00 WIB
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 9 * * *'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repo & Setup Python
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install feedparser google-generativeai
+
+      # 1. TENTUKAN TOPIK MASA LALU
+      - name: Fetch Topic (MASA_LALU Mode)
+        # --mode masa_lalu akan dijalankan. Outputnya adalah topic_past.json
+        run: python scripts/fetch_news.py --mode masa_lalu --keywords-file config/keywords.txt --out topic_past.json
+        
+      # 2. GENERATE SCRIPT dengan Gemini
+      - name: Generate Script with Gemini
+        # Hapus --images-out dan ubah output menjadi JSON
+        run: python scripts/generate_script.py --input topic_past.json --output script_past.json
+
+      - name: Upload Past Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-output-masa-lalu-${{ github.run_number }}
+          path: |
+            topic_past.json
+            script_past.json 
             data/news_history.json
           retention-days: 7
