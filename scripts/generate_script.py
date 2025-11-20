@@ -63,7 +63,7 @@ Lakukan hal berikut:
 """
 
     try:
-        model = genai.GenerativeModel("gemini-1.0-pro")
+        model = genai.GenerativeModel("gemini-pro")
         response = model.generate_content(
             prompt,
             safety_settings={
