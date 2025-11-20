@@ -1,48 +1,43 @@
-name: Consolidated Content Pipeline
+name: Auto Video Pipeline
 
 on:
   schedule:
-    # 06:00 WIB (Topik Harian 1)
-    - cron: '0 23 * * *'
-    # 16:00 WIB (Topik Harian 2)
-    - cron: '0 9 * * *'
+    - cron: '0 23 * * *'   # 06:00 WIB
+    - cron: '0 9 * * *'    # 16:00 WIB
   workflow_dispatch:
 
-env:
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
 jobs:
-  run_pipeline:
+  run:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: 📦 Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python Environment
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          # Tetap gunakan 3.12 untuk menghindari masalah library
-          python-version: '3.12' 
+          python-version: '3.10'
 
-      - name: ⚙️ Install Dependencies
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install --upgrade google-generativeai
+          pip install google-generativeai
 
-      # Hapus step fetch_news.py. Langsung panggil generate_script.py
-      - name: ✍️ Generate Unique Topic & Script (Gemini)
-        # Output adalah satu file JSON final yang berisi script dan keyword
-        run: python scripts/generate_script.py --keywords-file config/keywords.txt --output script_output.json
+      - name: Generate Content with Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python scripts/generate_script.py \
+            --keywords-file config/keywords.txt \
+            --output-script script.txt \
+            --output-images image_keywords.txt
 
-      # TODO: Tambahkan langkah 2 (Pencarian Gambar) dan langkah 3 (Video Rendering) di sini!
-
-      - name: 💾 Upload Artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: consolidated-output-${{ github.run_number }}
+          name: pipeline-output-${{ github.run_number }}
           path: |
-            script_output.json 
-            data/used_topics.json # File history baru
-            gemini_full_output.json
+            script.txt
+            image_keywords.txt
+            data/used_topics.json
           retention-days: 7
