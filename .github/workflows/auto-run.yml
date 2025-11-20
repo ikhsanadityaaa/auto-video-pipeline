@@ -1,4 +1,4 @@
-name: Auto Video Pipeline
+name: Auto Video Content Pipeline
 
 # Jadwal Cron untuk Dua Kali Sehari
 on:
@@ -21,36 +21,33 @@ on:
           - masa_lalu
 
 env:
+  # Pastikan Anda sudah menyimpan kunci API Gemini di GitHub Secrets
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
 jobs:
   
   # ===============================================
-  # JOB UTAMA: PENENTU (Dipisah berdasarkan Input/Jadwal)
+  # JOB UTAMA: RUN PIPELINE
   # ===============================================
   run_pipeline:
     runs-on: ubuntu-latest
     
-    # Kondisi: Jika dijalankan manual, jalankan job hanya jika mode cocok.
-    # Jika dijalankan oleh jadwal (cron), job akan selalu berjalan.
-    if: |
-      github.event_name != 'workflow_dispatch' || 
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'aktual' && (github.event.schedule == '0 23 * * *' || github.event_name == 'workflow_dispatch')) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'masa_lalu' && (github.event.schedule == '0 9 * * *' || github.event_name == 'workflow_dispatch'))
-
-
+    # Job ini akan berjalan jika dipicu oleh jadwal (cron) atau manual.
+    # Batasan logika dipindahkan ke dalam step 'Set Pipeline Mode'
     steps:
       - name: 📦 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python Environment
+      - name: 🐍 Setup Python Environment (Menggunakan 3.12 untuk stabilitas)
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          # Upgrade ke Python 3.12 untuk menghindari konflik library
+          python-version: '3.12' 
 
       - name: ⚙️ Install Dependencies & Upgrade Gemini
         run: |
           pip install --upgrade pip
+          # Memaksa upgrade google-generativeai untuk fitur structured output
           pip install --upgrade google-generativeai
           pip install feedparser
 
@@ -72,19 +69,27 @@ jobs:
             echo "Error: Mode tidak terdefinisi"
             exit 1
           fi
+          
+          # Set output yang akan digunakan oleh step-step berikutnya
           echo "mode=$MODE" >> $GITHUB_OUTPUT
           echo "topic_file=topic_$MODE.json" >> $GITHUB_OUTPUT
           echo "script_file=script_$MODE.json" >> $GITHUB_OUTPUT
+          
+          echo "Mode yang dijalankan: $MODE"
 
       # 1. TENTUKAN TOPIK (Fetch News)
       - name: 🔍 Fetch Topic Query (${{ steps.set_mode.outputs.mode }})
+        # Skrip fetch_news.py membutuhkan argumen --mode
         run: python scripts/fetch_news.py --mode ${{ steps.set_mode.outputs.mode }} --keywords-file config/keywords.txt --out ${{ steps.set_mode.outputs.topic_file }}
         
       # 2. GENERATE SCRIPT dengan Gemini
       - name: ✍️ Generate Script & Keywords (Gemini)
+        # Skrip generate_script.py membaca query dan mengeluarkan script JSON
         run: python scripts/generate_script.py --input ${{ steps.set_mode.outputs.topic_file }} --output ${{ steps.set_mode.outputs.script_file }}
 
-      # 3. LANJUTAN: UPLOAD ARTIFACTS
+      # TODO: Tambahkan langkah 3 (Pencarian Gambar) dan langkah 4 (Video Rendering) di sini!
+
+      # 3. UPLOAD ARTIFACTS
       - name: 💾 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -93,4 +98,5 @@ jobs:
             ${{ steps.set_mode.outputs.topic_file }}
             ${{ steps.set_mode.outputs.script_file }} 
             data/news_history.json
+            gemini_full_output.json # Untuk debugging
           retention-days: 7
