@@ -28,3 +28,14 @@ jobs:
 
       - name: Generate Script + Image Keywords
         run: python scripts/generate_script.py --input topic.json --output script.txt --images-out image_keywords.txt
+
+      - name: Upload hasil sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-pipeline-output-${{ github.run_number }}
+          path: |
+            topic.json
+            script.txt
+            image_keywords.txt
+            data/news_history.json
+          retention-days: 7
