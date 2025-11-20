@@ -13,57 +13,66 @@ def main():
     parser.add_argument("--images-out", required=True)
     args = parser.parse_args()
 
+    # === Load artikel ===
     with open(args.input, "r", encoding="utf-8") as f:
         articles = json.load(f)
 
+    # === Jika tidak ada berita ===
     if isinstance(articles, dict) and articles.get("error"):
         print("Fallback: tidak ada berita ditemukan")
-        fallback = "Pernahkah kamu dengar tentang: misteri dunia?"
+        fallback_script = "Pernahkah kamu dengar salah satu misteri terbesar dunia?"
+        fallback_keywords = "mystery,ancient_history,science_discovery,archive_photo"
+
         with open(args.output, "w", encoding="utf-8") as out:
-            out.write(fallback)
-        with open(args.images-out, "w", encoding="utf-8") as img_out:
-            img_out.write("mystery,ancient,history,discovery")
+            out.write(fallback_script)
+        with open(args.images_out, "w", encoding="utf-8") as img_out:
+            img_out.write(fallback_keywords)
         return
 
-    # Ambil artikel pertama
+    # === Ambil artikel pertama ===
     first = articles[0] if isinstance(articles, list) else articles
-    title = first["title"]
-    summary = first["summary"]
-    link = first["link"]
+    title = first.get("title", "")
+    summary = first.get("summary", "")
+    link = first.get("link", "")
 
-    # === PROMPT GEMINI ===
+    # === Prompt Gemini ===
     prompt = f"""
-Berdasarkan artikel berikut:
+You are an expert researcher and documentary scriptwriter.
 
-Judul: {title}
-Ringkasan: {summary}
-Link: {link}
+Use the article below:
 
-Lakukan hal berikut:
-1. Ekstrak topik inti dalam 5-7 kata (misal: "penemuan tiang logam di bawah Piramida Giza").
-2. Cari 3 artikel lain dari sumber kredibel (BBC, Reuters, AP, NatGeo, Smithsonian, dll) yang membahas topik YANG SAMA, bukan hanya kategori umum.
-3. Buat narasi video 60 detik dalam BAHASA INDONESIA dengan:
-   - Hook 3 detik di awal (kalimat mengejutkan atau pertanyaan menarik)
-   - Penjelasan fakta selama 50 detik
-   - Penutup 7 detik
-4. Jangan tambahkan fakta di luar sumber.
-5. Hasilkan 4 keyword pencarian gambar faktual (dalam bahasa Inggris, spasi diganti underscore, fokus pada foto asli, bukan ilustrasi).
-6. Format output EXACT seperti ini:
+TITLE: {title}
+SUMMARY: {summary}
+LINK: {link}
+
+TASK:
+1. Extract the MAIN TOPIC in 5–7 words.
+2. Identify 3 other reputable news articles discussing THE SAME specific topic. 
+   - They must be contextually the same topic, not just similar category.
+   - If cannot find, write "NONE".
+3. Write a 60-second video script in Bahasa Indonesia:
+   - 3-sec hook (shocking question or surprising fact)
+   - 50 sec explanation (pure factual)
+   - 7 sec closing
+4. Do NOT invent fake facts outside the available information.
+5. Produce 4 factual image search keywords (English, underscore instead of spaces).
+6. Output EXACTLY in this format:
 
 ===TOPIC===
-[TOPIC_INTI]
+[topic]
 ===ARTICLES===
-- [Judul 1] | [Link 1]
-- [Judul 2] | [Link 2]
-- ...
+- [Title 1] | [URL 1]
+- [Title 2] | [URL 2]
+- [Title 3] | [URL 3]
 ===SCRIPT===
-[Narasi 60 detik]
+[script here]
 ===IMAGES===
 [keyword1, keyword2, keyword3, keyword4]
 """
 
     try:
-        model = genai.GenerativeModel("gemini-1.0-pro")  # ✅ Model yang kompatibel dengan v1beta
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
         response = model.generate_content(
             prompt,
             safety_settings={
@@ -73,30 +82,40 @@ Lakukan hal berikut:
                 "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE"
             }
         )
+
         full_text = response.text.strip()
-
-        if "===SCRIPT===" in full_text:
-            script = full_text.split("===SCRIPT===")[1].split("===IMAGES===")[0].strip()
-            image_line = full_text.split("===IMAGES===")[1].strip()
-            keywords = image_line.replace("[", "").replace("]", "").replace('"', "")
-        else:
-            script = "Pernahkah kamu dengar tentang: " + title + "?"
-            keywords = "mystery,science,history,discovery"
-
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(script)
-        with open(args.images-out, "w", encoding="utf-8") as f:
-            f.write(keywords)
         with open("gemini_full_output.txt", "w", encoding="utf-8") as dbg:
             dbg.write(full_text)
 
+        # === Parse output ===
+        if "===SCRIPT===" in full_text and "===IMAGES===" in full_text:
+            script = full_text.split("===SCRIPT===")[1].split("===IMAGES===")[0].strip()
+            image_line = full_text.split("===IMAGES===")[1].strip()
+
+            keywords = (
+                image_line.replace("[", "")
+                .replace("]", "")
+                .replace('"', "")
+                .replace(" ", "")
+            )
+        else:
+            script = f"Pernahkah kamu dengar tentang {title}?"
+            keywords = "mystery,science,history,archive"
+
+        # === Simpan output ===
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(script)
+
+        with open(args.images_out, "w", encoding="utf-8") as f:
+            f.write(keywords)
+
     except Exception as e:
         print(f"Error Gemini: {e}")
-        fallback = f"Pernahkah kamu dengar tentang: {title}?"
+        fallback = f"Pernahkah kamu dengar tentang {title}?"
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(fallback)
-        with open(args.images-out, "w", encoding="utf-8") as f:
-            f.write("mystery,history,science")
+        with open(args.images_out, "w", encoding="utf-8") as f:
+            f.write("mystery,ancient,science,history")
 
 if __name__ == "__main__":
     main()
