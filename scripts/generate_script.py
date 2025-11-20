@@ -1,99 +1,111 @@
 import argparse
 import json
 import os
+import random
 import google.generativeai as genai
-# Hapus semua impor tipe objek yang bermasalah (types, HarmCategory, HarmBlockThreshold)
-# Hanya impor tipe jika diperlukan, tapi kita akan menghindari objek khusus.
 
-# Konfigurasi API Key
-# Pastikan GEMINI_API_KEY sudah diset di GitHub Secrets
-try:
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-except KeyError:
-    print("❌ ERROR: Variabel lingkungan GEMINI_API_KEY tidak ditemukan.")
-    # Exit jika key tidak ada, karena skrip tidak dapat berjalan tanpa API.
-    exit(1)
+# --- Konfigurasi & Utilities ---
+HISTORY_FILE = "data/used_topics.json"
+TOPIC_CRITERIA = "misteri, kisah sejarah terlupakan, penemuan sains unik, atau tragedi lama."
 
-# Fallback default jika terjadi kegagalan total
-FALLBACK_SCRIPT = "Ada kisah misteri yang tersembunyi. Mari kita cari tahu bersama! (Fallback Script)"
-FALLBACK_KEYWORDS = ["mystery_archive", "dark_past", "secret_files", "ancient_discovery"]
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+
+def load_history():
+    """Memuat daftar topik (berupa judul atau link) yang sudah pernah dibuat."""
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_history(new_topic_title):
+    """Menyimpan judul topik baru ke history."""
+    os.makedirs("data", exist_ok=True)
+    history = load_history()
+    history.append(new_topic_title)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+
+# === Skema Output (Dictionary Standard) ===
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topic": {"type": "string", "description": "Judul unik topik yang ditemukan."},
+        "script": {"type": "string", "description": "Naskah video 60 detik dalam Bahasa Indonesia (Hook, Body, Closing)."},
+        "factual_keywords": {
+            "type": "array", 
+            "items": {"type": "string"}, 
+            "description": "4 kata kunci faktual (nama, lokasi, objek) untuk pencarian gambar."
+        },
+        "illustrative_keywords": {
+            "type": "array", 
+            "items": {"type": "string"}, 
+            "description": "4 kata kunci ilustratif (atmosfir, emosi, vibe) untuk pencarian gambar stock."
+        },
+        "source_link": {"type": "string", "description": "Link URL sumber utama informasi ini."}
+    },
+    "required": ["topic", "script", "factual_keywords", "illustrative_keywords", "source_link"]
+}
+
+# Konfigurasi Keselamatan (Dictionary Standar)
+SAFETY_SETTINGS = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+]
+
+# === MAIN FUNCTION ===
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="JSON file berisi topik query dari fetch_news.py.")
-    parser.add_argument("--output", required=True, help="JSON file output akhir (Script & Keywords).")
+    parser.add_argument("--keywords-file", required=True)
+    parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    # === Load TOPIC QUERY dari skrip fetch_news.py ===
+    # 1. Muat Keywords & History
     try:
-        with open(args.input, "r", encoding="utf-8") as f:
-            topic_query = json.load(f)
-    except Exception as e:
-        print(f"❌ Error loading input query file: {e}")
-        final_output = {"script": FALLBACK_SCRIPT, "keywords": FALLBACK_KEYWORDS}
-        with open(args.output, "w", encoding="utf-8") as out:
-            json.dump(final_output, out, indent=4, ensure_ascii=False)
-        return
-        
-    # Ambil prompt dan metadata
-    gemini_prompt = topic_query.get("gemini_prompt", "")
-    topic_type = topic_query.get("topic_type", "UNKNOWN")
+        with open(args.keywords_file, "r", encoding="utf-8") as f:
+            keywords = [k.strip() for k in f if k.strip()]
+    except FileNotFoundError:
+        print("❌ Error: keywords-file tidak ditemukan.")
+        exit(1)
     
-    if not gemini_prompt:
-        print("❌ Error: gemini_prompt tidak ditemukan di file input.")
-        final_output = {"script": FALLBACK_SCRIPT, "keywords": FALLBACK_KEYWORDS}
-        with open(args.output, "w", encoding="utf-8") as out:
-            json.dump(final_output, out, indent=4, ensure_ascii=False)
-        return
+    history = load_history()
+    history_str = json.dumps(history)
+    
+    # Random query untuk variasi
+    random_query = random.choice(keywords)
 
-    # =========================================================
-    # 1. DEFINISI STRUKTUR OUTPUT (JSON SCHEMA sebagai Dictionary Standar)
-    # =========================================================
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "topic": {"type": "string", "description": "Topik utama dalam 5-7 kata."},
-            "script": {"type": "string", "description": "Naskah video 60 detik dalam Bahasa Indonesia (termasuk Hook, Body, Closing)."},
-            "factual_keywords": {
-                "type": "array", 
-                "items": {"type": "string"}, 
-                "description": "4 kata kunci faktual (nama, lokasi, objek) untuk pencarian gambar. Contoh: 'Titanic wreckage'."
-            },
-            "illustrative_keywords": {
-                "type": "array", 
-                "items": {"type": "string"}, 
-                "description": "4 kata kunci ilustratif (atmosfir, emosi, vibe) untuk pencarian gambar stock. Contoh: 'dark stormy sea', 'old archive'."
-            }
-        },
-        "required": ["topic", "script", "factual_keywords", "illustrative_keywords"]
-    }
+    # 2. Siapkan Prompt Final
+    gemini_prompt = f"""
+Anda adalah Redaktur Konten. Tugas Anda adalah mencari 1 topik (tidak peduli aktual atau masa lalu) yang unik dan belum pernah dibuat.
+
+Kriteria Topik: Topik harus relevan dengan: {TOPIC_CRITERIA}.
+Fokus pada kata kunci: {random_query}.
+
+Pembatasan: Jangan gunakan topik yang judulnya mirip atau sama dengan yang ada di history ini: {history_str}.
+
+Tugas:
+1. Cari 1 topik unik (gunakan Grounding/Web Search).
+2. Tulis skrip video 60 detik dalam Bahasa Indonesia.
+3. Output harus SANGAT ketat dalam format JSON yang diminta.
+"""
     
-    # =========================================================
-    # 2. PEMANGGILAN API DENGAN GROUNDING
-    # =========================================================
+    # 3. Panggil Gemini API
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        # Konfigurasi Keselamatan (Menggunakan Dictionary Standar)
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-        
-        # Konfigurasi Tools & Schema (Menggunakan Dictionary Standar)
-        tool_config = {
-            "tools": [{"google_search": {}}],
-            "response_mime_type": "application/json",
-            "response_schema": response_schema 
-        }
-
-        # Panggil API
+        # FIX: Gunakan parameter tools dan response_schema langsung
         response = model.generate_content(
             gemini_prompt,
-            config=tool_config,
-            safety_settings=safety_settings 
+            # Perhatikan: Konfigurasi API disebar langsung sebagai keyword args.
+            tools=[{"google_search": {}}],
+            response_mime_type="application/json",
+            response_schema=RESPONSE_SCHEMA,
+            safety_settings=SAFETY_SETTINGS
         )
         
         gemini_output_str = response.text.strip()
@@ -105,21 +117,23 @@ def main():
         # Parsing JSON
         gemini_output = json.loads(gemini_output_str)
 
-        # === Simpan output akhir ===
-        # Gabungkan semua keywords menjadi satu list 
+        # 4. Simpan Output dan Update History
+        
         all_keywords = (
             gemini_output.get("factual_keywords", []) + 
             gemini_output.get("illustrative_keywords", [])
         )
         
         final_output = {
-            "title": gemini_output.get("topic", "Topik Tanpa Judul"),
-            "script": gemini_output.get("script", FALLBACK_SCRIPT),
+            "title": gemini_output.get("topic", "Topik Tak Dikenal"),
+            "script": gemini_output.get("script", "Fallback Script"),
             "keywords": all_keywords,
-            "topic_type": topic_type,
-            "source_info": f"Topic generated by Gemini (Mode: {topic_type})" 
+            "source_link": gemini_output.get("source_link", "URL Not Provided"),
         }
         
+        # Simpan topik baru ke history
+        save_history(final_output['title'])
+
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(final_output, f, indent=4, ensure_ascii=False)
             
@@ -127,8 +141,8 @@ def main():
 
     except Exception as e:
         print(f"❌ Error Gemini API Call: {e}")
-        # Fallback jika panggilan API gagal total
-        fallback_output = {"script": FALLBACK_SCRIPT, "keywords": FALLBACK_KEYWORDS}
+        # Fallback
+        fallback_output = {"script": "Fallback Error Script", "keywords": []}
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(fallback_output, f, indent=4, ensure_ascii=False)
 
