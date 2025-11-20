@@ -1,102 +1,48 @@
-name: Auto Video Content Pipeline
+name: Consolidated Content Pipeline
 
-# Jadwal Cron untuk Dua Kali Sehari
 on:
   schedule:
-    # 06:00 WIB (Cron: 0 23 * * *)
+    # 06:00 WIB (Topik Harian 1)
     - cron: '0 23 * * *'
-    # 16:00 WIB (Cron: 0 9 * * *)
+    # 16:00 WIB (Topik Harian 2)
     - cron: '0 9 * * *'
-    
-  # Konfigurasi Run Manual (Workflow Dispatch)
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Pilih mode yang akan dijalankan secara manual.'
-        required: true
-        default: 'aktual'
-        type: choice
-        options:
-          - aktual
-          - masa_lalu
 
 env:
-  # Pastikan Anda sudah menyimpan kunci API Gemini di GitHub Secrets
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
 jobs:
-  
-  # ===============================================
-  # JOB UTAMA: RUN PIPELINE
-  # ===============================================
   run_pipeline:
     runs-on: ubuntu-latest
     
-    # Job ini akan berjalan jika dipicu oleh jadwal (cron) atau manual.
-    # Batasan logika dipindahkan ke dalam step 'Set Pipeline Mode'
     steps:
       - name: 📦 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python Environment (Menggunakan 3.12 untuk stabilitas)
+      - name: 🐍 Setup Python Environment
         uses: actions/setup-python@v4
         with:
-          # Upgrade ke Python 3.12 untuk menghindari konflik library
+          # Tetap gunakan 3.12 untuk menghindari masalah library
           python-version: '3.12' 
 
-      - name: ⚙️ Install Dependencies & Upgrade Gemini
+      - name: ⚙️ Install Dependencies
         run: |
           pip install --upgrade pip
-          # Memaksa upgrade google-generativeai untuk fitur structured output
           pip install --upgrade google-generativeai
-          pip install feedparser
 
-      # --- TENTUKAN MODE BERDASARKAN CRON/INPUT MANUAL ---
-      - name: 📝 Set Pipeline Mode
-        id: set_mode
-        run: |
-          # Logika untuk menentukan mode (aktual/masa_lalu)
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Gunakan input manual
-            MODE="${{ github.event.inputs.mode }}"
-          elif [ "${{ github.event.schedule }}" == "0 23 * * *" ]; then
-            # Jika jadwal 06:00 WIB
-            MODE="aktual"
-          elif [ "${{ github.event.schedule }}" == "0 9 * * *" ]; then
-            # Jika jadwal 16:00 WIB
-            MODE="masa_lalu"
-          else
-            echo "Error: Mode tidak terdefinisi"
-            exit 1
-          fi
-          
-          # Set output yang akan digunakan oleh step-step berikutnya
-          echo "mode=$MODE" >> $GITHUB_OUTPUT
-          echo "topic_file=topic_$MODE.json" >> $GITHUB_OUTPUT
-          echo "script_file=script_$MODE.json" >> $GITHUB_OUTPUT
-          
-          echo "Mode yang dijalankan: $MODE"
+      # Hapus step fetch_news.py. Langsung panggil generate_script.py
+      - name: ✍️ Generate Unique Topic & Script (Gemini)
+        # Output adalah satu file JSON final yang berisi script dan keyword
+        run: python scripts/generate_script.py --keywords-file config/keywords.txt --output script_output.json
 
-      # 1. TENTUKAN TOPIK (Fetch News)
-      - name: 🔍 Fetch Topic Query (${{ steps.set_mode.outputs.mode }})
-        # Skrip fetch_news.py membutuhkan argumen --mode
-        run: python scripts/fetch_news.py --mode ${{ steps.set_mode.outputs.mode }} --keywords-file config/keywords.txt --out ${{ steps.set_mode.outputs.topic_file }}
-        
-      # 2. GENERATE SCRIPT dengan Gemini
-      - name: ✍️ Generate Script & Keywords (Gemini)
-        # Skrip generate_script.py membaca query dan mengeluarkan script JSON
-        run: python scripts/generate_script.py --input ${{ steps.set_mode.outputs.topic_file }} --output ${{ steps.set_mode.outputs.script_file }}
+      # TODO: Tambahkan langkah 2 (Pencarian Gambar) dan langkah 3 (Video Rendering) di sini!
 
-      # TODO: Tambahkan langkah 3 (Pencarian Gambar) dan langkah 4 (Video Rendering) di sini!
-
-      # 3. UPLOAD ARTIFACTS
       - name: 💾 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: output-${{ steps.set_mode.outputs.mode }}-${{ github.run_number }}
+          name: consolidated-output-${{ github.run_number }}
           path: |
-            ${{ steps.set_mode.outputs.topic_file }}
-            ${{ steps.set_mode.outputs.script_file }} 
-            data/news_history.json
-            gemini_full_output.json # Untuk debugging
+            script_output.json 
+            data/used_topics.json # File history baru
+            gemini_full_output.json
           retention-days: 7
