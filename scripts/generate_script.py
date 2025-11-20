@@ -8,8 +8,17 @@ import google.generativeai as genai
 HISTORY_FILE = "data/used_topics.json"
 TOPIC_CRITERIA = "misteri, kisah sejarah terlupakan, penemuan sains unik, atau tragedi lama."
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+try:
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+except KeyError:
+    print("❌ ERROR: Variabel lingkungan GEMINI_API_KEY tidak ditemukan.")
+    exit(1)
 
+# Fallback default
+FALLBACK_SCRIPT = "Ada kisah misteri yang tersembunyi. Mari kita cari tahu bersama! (Fallback Script)"
+FALLBACK_KEYWORDS = ["mystery_archive", "dark_past", "secret_files", "ancient_discovery"]
+
+# Helper functions for history (load_history, save_history) remain the same...
 def load_history():
     """Memuat daftar topik (berupa judul atau link) yang sudah pernah dibuat."""
     if not os.path.exists(HISTORY_FILE):
@@ -27,6 +36,7 @@ def save_history(new_topic_title):
     history.append(new_topic_title)
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
+
 
 # === Skema Output (Dictionary Standard) ===
 RESPONSE_SCHEMA = {
@@ -98,14 +108,17 @@ Tugas:
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        # FIX: Gunakan parameter tools dan response_schema langsung
+        # FIX: Bungkus semua konfigurasi ke dalam dictionary 'config'
+        full_config = {
+            "tools": [{"google_search": {}}],
+            "response_mime_type": "application/json",
+            "response_schema": RESPONSE_SCHEMA
+        }
+
         response = model.generate_content(
             gemini_prompt,
-            # Perhatikan: Konfigurasi API disebar langsung sebagai keyword args.
-            tools=[{"google_search": {}}],
-            response_mime_type="application/json",
-            response_schema=RESPONSE_SCHEMA,
-            safety_settings=SAFETY_SETTINGS
+            config=full_config, # Gunakan keyword 'config'
+            safety_settings=SAFETY_SETTINGS 
         )
         
         gemini_output_str = response.text.strip()
@@ -126,7 +139,7 @@ Tugas:
         
         final_output = {
             "title": gemini_output.get("topic", "Topik Tak Dikenal"),
-            "script": gemini_output.get("script", "Fallback Script"),
+            "script": gemini_output.get("script", FALLBACK_SCRIPT),
             "keywords": all_keywords,
             "source_link": gemini_output.get("source_link", "URL Not Provided"),
         }
