@@ -3,6 +3,8 @@ import json
 import os
 import random
 import google.generativeai as genai
+# RE-IMPORT: Menggunakan tipe objek API untuk struktur yang tepat
+from google.generativeai import types 
 
 # --- Konfigurasi & Utilities ---
 HISTORY_FILE = "data/used_topics.json"
@@ -38,8 +40,8 @@ def save_history(new_topic_title):
         json.dump(history, f, indent=2, ensure_ascii=False)
 
 
-# === Skema Output (Dictionary Standard) ===
-RESPONSE_SCHEMA = {
+# === Skema Output (Dictionary Standard - Ini tidak diubah) ===
+RESPONSE_SCHEMA_DICT = {
     "type": "object",
     "properties": {
         "topic": {"type": "string", "description": "Judul unik topik yang ditemukan."},
@@ -85,8 +87,6 @@ def main():
     
     history = load_history()
     history_str = json.dumps(history)
-    
-    # Random query untuk variasi
     random_query = random.choice(keywords)
 
     # 2. Siapkan Prompt Final
@@ -108,16 +108,18 @@ Tugas:
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        # FIX: Bungkus semua konfigurasi ke dalam dictionary 'config'
-        full_config = {
-            "tools": [{"google_search": {}}],
-            "response_mime_type": "application/json",
-            "response_schema": RESPONSE_SCHEMA
-        }
+        # FIX: Bungkus semua konfigurasi ke dalam objek types.GenerateContentConfig
+        # Ini adalah cara yang benar sesuai dokumentasi modern.
+        full_config = types.GenerateContentConfig(
+            tools=[{"google_search": {}}],
+            response_mime_type="application/json",
+            response_schema=RESPONSE_SCHEMA_DICT
+        )
 
+        # Panggil API dengan config dan safety_settings
         response = model.generate_content(
-            gemini_prompt,
-            config=full_config, # Gunakan keyword 'config'
+            contents=gemini_prompt, # Gunakan contents jika passing keyword lain
+            config=full_config,     # Gunakan keyword 'config'
             safety_settings=SAFETY_SETTINGS 
         )
         
